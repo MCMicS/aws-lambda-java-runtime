@@ -6,13 +6,16 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
 import java.text.MessageFormat;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.function.Function;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class LambdaBootstrap {
+
+    private static final Logger log = Logger.getLogger(LambdaBootstrap.class.getName());
 
     private static final String LAMBDA_VERSION_DATE = "2018-06-01";
     private static final String LAMBDA_RUNTIME_URL_TEMPLATE = "http://{0}/{1}/runtime/invocation/next";
@@ -21,7 +24,7 @@ public class LambdaBootstrap {
     private static final String LAMBDA_ERROR_URL_TEMPLATE = "http://{0}/{1}/runtime/invocation/{2}/error";
 
     public static void main(String args[]) {
-
+        log.setLevel(Level.ALL);
         String runtimeApi = getEnv("AWS_LAMBDA_RUNTIME_API");
         String taskRoot = getEnv("LAMBDA_TASK_ROOT");
         String handlerName = getEnv("_HANDLER");
@@ -53,20 +56,26 @@ public class LambdaBootstrap {
 
         String requestId;
         String runtimeUrl = MessageFormat.format(LAMBDA_RUNTIME_URL_TEMPLATE, runtimeApi, LAMBDA_VERSION_DATE);
+        log.info("runtimeUrl " + runtimeUrl);
 
         // Main event loop
         while (true) {
 
             // Get next Lambda Event
             SimpleHttpResponse event = get(runtimeUrl);
+            log.info("runtimeUrl " + runtimeUrl);
             requestId = getHeaderValue("Lambda-Runtime-Aws-Request-Id", event.getHeaders());
+            log.info("event.getHeaders() " + event.getHeaders());
 
             try{
                 // Invoke Handler Method
                 String result = invoke(handlerClass, handlerMethod, event.getBody());
+                log.info("result " + result);
 
                 // Post the results of Handler Invocation
                 String invocationUrl = MessageFormat.format(LAMBDA_INVOCATION_URL_TEMPLATE, runtimeApi, LAMBDA_VERSION_DATE, requestId);
+                log.info("invocationUrl " + invocationUrl);
+                System.out.println("invocationUrl SysOut"  + invocationUrl);
                 post(invocationUrl, result);
             }
             catch (Exception e) {
@@ -140,15 +149,40 @@ public class LambdaBootstrap {
         return null;
     }
 
-    private static String invoke(Class handlerClass, Method handlerMethod, Object payload) throws Exception {
-
+    private static String invoke(Class handlerClass, Method handlerMethod, String payload) throws Exception {
+//        log.fine("invoke payload: " + payload);
         Object myClassObj = handlerClass.getConstructor().newInstance();
-        Object[] args = new Object[]{payload};
+//        Object[] args = new Object[]{payload};
 
         // TODO: Handle overloads of handler method signatures depending on the parmCount.
-        //int parmCount = handlerMethod.getParameterCount();
+        int paramCount = handlerMethod.getParameterCount();
 
-        return (String) handlerMethod.invoke(myClassObj, args);
+        Function<Object, String> resultMapper = String::valueOf;
+        final List<Object> args = new ArrayList<>();
+        for (Class<?> parameterType : handlerMethod.getParameterTypes()) {
+            log.info("invoke parameterType: " + parameterType.getName());
+            if (InputStream.class.isAssignableFrom(parameterType)) {
+                args.add(new ByteArrayInputStream(payload.getBytes()));
+            }else if (OutputStream.class.isAssignableFrom(parameterType)) {
+                log.info("invoke add outputstream: " + parameterType.getName());
+                ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+                args.add(byteArrayOutputStream);
+                if (handlerMethod.getReturnType() != Void.class) {
+                    resultMapper = o -> byteArrayOutputStream.toString(StandardCharsets.UTF_8);
+                }
+            }else if (parameterType.getName().equalsIgnoreCase("com.amazonaws.services.lambda.runtime.Context")) {
+                // add context
+                Object context = parameterType.getConstructor().newInstance();
+                final LambdaContext lambdaContext = new LambdaContext();
+                args.add(lambdaContext);
+            }else{
+                args.add(payload);
+            }
+        }
+        log.info("invoke args: " + args);
+        Object result = handlerMethod.invoke(myClassObj, args.toArray());
+
+        return resultMapper.apply(result);
     }
 
     private static String getHeaderValue(String header, Map<String, List<String>> headers) {
@@ -175,7 +209,7 @@ public class LambdaBootstrap {
             output = readResponse(conn);
         }
         catch(IOException e) {
-            System.out.println("GET: " + remoteUrl);
+            log.info("GET: " + remoteUrl);
             e.printStackTrace();
         }
 
@@ -197,7 +231,7 @@ public class LambdaBootstrap {
             output = readResponse(conn);
         }
         catch(IOException ioe) {
-            System.out.println("POST: " + remoteUrl);
+            log.info("POST: " + remoteUrl);
             ioe.printStackTrace();
         }
 
