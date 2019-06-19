@@ -1,0 +1,6 @@
+out
+build
+dist
+aws-runtime
+.idea
+function.zip
